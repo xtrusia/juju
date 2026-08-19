@@ -213,20 +213,27 @@ func (s *MachinemanagerSuite) clientToTestDestroyMachinesWithParams(maxWait *tim
 		},
 	}}
 
-	args := params.DestroyMachinesParams{
-		Keep:  true,
-		Force: true,
-		MachineTags: []string{
-			"machine-0",
-			"machine-0-lxd-1",
-		},
-		MaxWait: maxWait,
+	machineTags := []string{
+		"machine-0",
+		"machine-0-lxd-1",
+	}
+	var args interface{} = params.DestroyMachinesParams{
+		Keep:        true,
+		Force:       true,
+		MachineTags: machineTags,
+		MaxWait:     maxWait,
 	}
 	res := new(params.DestroyMachineResults)
 	ress := params.DestroyMachineResults{Results: expectedResults}
 	mockFacadeCaller := basemocks.NewMockFacadeCaller(ctrl)
 	if method == "DestroyMachineWithHostedUnitsAndContainers" {
 		mockFacadeCaller.EXPECT().BestAPIVersion().Return(11)
+		args = params.DestroyMachinesWithHostedUnitsParams{
+			Keep:        true,
+			Force:       true,
+			MachineTags: machineTags,
+			MaxWait:     maxWait,
+		}
 	}
 	mockFacadeCaller.EXPECT().FacadeCall(method, args, res).SetArg(2, ress).Return(nil)
 	client := machinemanager.NewClientFromCaller(mockFacadeCaller)
@@ -261,7 +268,7 @@ func (s *MachinemanagerSuite) TestDestroyMachinesWithHostedUnitsAndContainers(c 
 		"DestroyMachineWithHostedUnitsAndContainers",
 		ctrl,
 	)
-	results, err := client.DestroyMachinesWithHostedUnitsAndContainers(true, true, false, (*time.Duration)(nil), "0", "0/lxd/1")
+	results, err := client.DestroyMachinesWithHostedUnitsAndContainers(true, true, (*time.Duration)(nil), "0", "0/lxd/1")
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(results, jc.DeepEquals, expected)
 }
@@ -274,7 +281,7 @@ func (s *MachinemanagerSuite) TestDestroyMachinesWithHostedUnitsAndContainersNot
 	mockFacadeCaller.EXPECT().BestAPIVersion().Return(10)
 	client := machinemanager.NewClientFromCaller(mockFacadeCaller)
 
-	_, err := client.DestroyMachinesWithHostedUnitsAndContainers(false, false, false, nil, "0")
+	_, err := client.DestroyMachinesWithHostedUnitsAndContainers(false, false, nil, "0")
 	c.Assert(err, jc.Satisfies, errors.IsNotSupported)
 	c.Assert(err, gc.ErrorMatches, "destroying machines with hosted units and containers on this version of Juju not supported")
 }

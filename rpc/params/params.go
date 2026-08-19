@@ -297,6 +297,19 @@ type DestroyMachinesParams struct {
 	MaxWait *time.Duration `json:"max-wait,omitempty"`
 }
 
+// DestroyMachinesWithHostedUnitsParams holds parameters for removing machines
+// with their hosted units and containers.
+type DestroyMachinesWithHostedUnitsParams struct {
+	MachineTags []string `json:"machine-tags"`
+	Keep        bool     `json:"keep,omitempty"`
+	Force       bool     `json:"force,omitempty"`
+
+	// MaxWait specifies the amount of time that each step in machine destroy process
+	// will wait before forcing the next step to kick-off. This parameter
+	// only makes sense in combination with 'force' set to 'true'.
+	MaxWait *time.Duration `json:"max-wait,omitempty"`
+}
+
 // RecordAgentStartInformationArgs holds the parameters for updating the
 // information reported by one or more machine agents when they start.
 type RecordAgentStartInformationArgs struct {

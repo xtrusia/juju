@@ -123,7 +123,7 @@ func (c *removeCommand) Init(args []string) error {
 
 type RemoveMachineAPI interface {
 	DestroyMachinesWithParams(force, keep, dryRun bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error)
-	DestroyMachinesWithHostedUnitsAndContainers(force, keep, dryRun bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error)
+	DestroyMachinesWithHostedUnitsAndContainers(force, keep bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error)
 	BestAPIVersion() int
 	Close() error
 }
@@ -212,7 +212,9 @@ func (c *removeCommand) Run(ctx *cmd.Context) error {
 
 	destroyMachines := client.DestroyMachinesWithParams
 	if destroyHostedUnitsAndContainers {
-		destroyMachines = client.DestroyMachinesWithHostedUnitsAndContainers
+		destroyMachines = func(force, keep, _ bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error) {
+			return client.DestroyMachinesWithHostedUnitsAndContainers(force, keep, maxWait, machines...)
+		}
 	}
 	results, err := destroyMachines(
 		c.Force,
