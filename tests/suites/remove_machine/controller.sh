@@ -1,15 +1,16 @@
 wait_for_controller_machine_count() {
-	local expected attempt machine_info started stopped errors
+	local expected attempt machine_info total started stopped errors
 
 	expected=${1}
 	attempt=0
 
 	while true; do
 		machine_info="$(juju machines -m controller --format=json)"
+		total="$(yq -r '.machines | length' <<<"${machine_info}")"
 		started="$(yq -r '[.machines[] | select(.["juju-status"].current == "started")] | length' <<<"${machine_info}")"
 		stopped="$(yq -r '[.machines[] | select(.["juju-status"].current == "stopped")] | length' <<<"${machine_info}")"
 		errors="$(yq -r '[.machines[] | select(.["juju-status"].current == "error")] | length' <<<"${machine_info}")"
-		if [[ ${started} == "${expected}" && ${stopped} == "0" && ${errors} == "0" ]]; then
+		if [[ ${total} == "${expected}" && ${started} == "${expected}" && ${stopped} == "0" && ${errors} == "0" ]]; then
 			break
 		fi
 
@@ -45,9 +46,17 @@ run_remove_controller_machine() {
 	wait_for "controller" "$(idle_condition "controller" 0 1)"
 	wait_for "controller" "$(idle_condition "controller" 0 2)"
 
-	juju remove-machine -m controller 1 --no-prompt
+	if [[ ${BOOTSTRAP_PROVIDER:-} == "lxd" ]]; then
+		check_dependencies lxc
+		instance_id="$(juju show-machine -m controller 2 --format=json | yq -r '.machines."2"."instance-id"')"
+		lxc info "${instance_id}" >/dev/null
+		lxc delete --force "${instance_id}"
+		juju remove-machine -m controller 2 --force --no-wait --no-prompt
+	else
+		juju remove-machine -m controller 2 --force --no-prompt
+	fi
 	wait_for_controller_machine_count 2
-	juju remove-machine -m controller 2 --no-prompt
+	juju remove-machine -m controller 1 --no-prompt
 	wait_for_controller_machine_count 1
 
 	juju show-controller --format=json |
