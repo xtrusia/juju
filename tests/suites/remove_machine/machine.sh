@@ -6,6 +6,16 @@ wait_for_machine_removed() {
 	wait_for "false" ".machines | has(\"${machine_id}\")"
 }
 
+add_container_host_machine() {
+	# Container-in-container is unreliable on the LXD provider, so use a VM
+	# for the container host.
+	if [[ ${BOOTSTRAP_PROVIDER:-} == "lxd" ]]; then
+		juju add-machine "$@" --constraints="virt-type=virtual-machine"
+	else
+		juju add-machine "$@"
+	fi
+}
+
 run_remove_machine_without_workloads() {
 	echo
 
@@ -45,7 +55,7 @@ run_remove_machine_with_container_unit() {
 	file="${TEST_DIR}/remove_machine_with_container_unit.log"
 	ensure "remove-machine-container-unit" "${file}"
 
-	juju add-machine --base ubuntu@20.04
+	add_container_host_machine --base ubuntu@20.04
 	wait_for_machine_agent_status "0" "started"
 	juju add-machine lxd:0 --base ubuntu@20.04
 	wait_for_container_agent_status "0/lxd/0" "started"
@@ -65,7 +75,7 @@ run_force_remove_machine_with_container() {
 	file="${TEST_DIR}/force_remove_machine_with_container.log"
 	ensure "remove-machine-container-force" "${file}"
 
-	juju add-machine
+	add_container_host_machine
 	wait_for_machine_agent_status "0" "started"
 	juju add-machine lxd:0
 	wait_for_container_agent_status "0/lxd/0" "started"
@@ -89,7 +99,21 @@ test_remove_non_controller_machines() {
 
 		run "run_remove_machine_without_workloads"
 		run "run_remove_machine_with_unit"
-		run "run_remove_machine_with_container_unit"
-		run "run_force_remove_machine_with_container"
+
+		case "${BOOTSTRAP_PROVIDER:-}" in
+		"lxd")
+			if stat /dev/kvm; then
+				run "run_remove_machine_with_container_unit"
+				run "run_force_remove_machine_with_container"
+			else
+				echo "==> TEST SKIPPED: remove_machine_with_container_unit - lxd without kvm is not supported"
+				echo "==> TEST SKIPPED: force_remove_machine_with_container - lxd without kvm is not supported"
+			fi
+			;;
+		*)
+			run "run_remove_machine_with_container_unit"
+			run "run_force_remove_machine_with_container"
+			;;
+		esac
 	)
 }
