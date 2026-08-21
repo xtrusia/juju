@@ -63,19 +63,23 @@ func (client *Client) AddMachines(machineParams []params.AddMachineParams) ([]pa
 // DestroyMachinesWithParams removes the given set of machines, the semantics of which
 // is determined by the force and keep parameters.
 func (client *Client) DestroyMachinesWithParams(force, keep, dryRun bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error) {
-	return client.destroyMachinesWithParams(
-		"DestroyMachineWithParams",
-		func(machineTags []string) interface{} {
-			return params.DestroyMachinesParams{
-				Force:       force,
-				Keep:        keep,
-				DryRun:      dryRun,
-				MachineTags: machineTags,
-				MaxWait:     maxWait,
-			}
-		},
-		machines...,
-	)
+	machineTags, allResults, index := prepareDestroyMachines(machines)
+	if len(machineTags) == 0 {
+		return allResults, nil
+	}
+
+	args := params.DestroyMachinesParams{
+		Force:       force,
+		Keep:        keep,
+		DryRun:      dryRun,
+		MachineTags: machineTags,
+		MaxWait:     maxWait,
+	}
+	var result params.DestroyMachineResults
+	if err := client.facade.FacadeCall("DestroyMachineWithParams", args, &result); err != nil {
+		return nil, errors.Trace(err)
+	}
+	return mergeDestroyMachineResults(allResults, index, result.Results)
 }
 
 // DestroyMachinesWithHostedUnitsAndContainers removes the given machines and
@@ -85,21 +89,26 @@ func (client *Client) DestroyMachinesWithHostedUnitsAndContainers(force, keep bo
 	if client.facade.BestAPIVersion() < 11 {
 		return nil, errors.NotSupportedf("destroying machines with hosted units and containers on this version of Juju")
 	}
-	return client.destroyMachinesWithParams(
-		"DestroyMachineWithHostedUnitsAndContainers",
-		func(machineTags []string) interface{} {
-			return params.DestroyMachinesWithHostedUnitsParams{
-				MachineTags: machineTags,
-				Keep:        keep,
-				Force:       force,
-				MaxWait:     maxWait,
-			}
-		},
-		machines...,
-	)
+
+	machineTags, allResults, index := prepareDestroyMachines(machines)
+	if len(machineTags) == 0 {
+		return allResults, nil
+	}
+
+	args := params.DestroyMachinesWithHostedUnitsParams{
+		MachineTags: machineTags,
+		Keep:        keep,
+		Force:       force,
+		MaxWait:     maxWait,
+	}
+	var result params.DestroyMachineResults
+	if err := client.facade.FacadeCall("DestroyMachineWithHostedUnitsAndContainers", args, &result); err != nil {
+		return nil, errors.Trace(err)
+	}
+	return mergeDestroyMachineResults(allResults, index, result.Results)
 }
 
-func (client *Client) destroyMachinesWithParams(method string, makeArgs func([]string) interface{}, machines ...string) ([]params.DestroyMachineResult, error) {
+func prepareDestroyMachines(machines []string) ([]string, []params.DestroyMachineResult, []int) {
 	allResults := make([]params.DestroyMachineResult, len(machines))
 	machineTags := make([]string, 0, len(machines))
 	index := make([]int, 0, len(machines))
@@ -113,18 +122,15 @@ func (client *Client) destroyMachinesWithParams(method string, makeArgs func([]s
 		index = append(index, i)
 		machineTags = append(machineTags, names.NewMachineTag(machineId).String())
 	}
-	if len(machineTags) > 0 {
-		args := makeArgs(machineTags)
-		var result params.DestroyMachineResults
-		if err := client.facade.FacadeCall(method, args, &result); err != nil {
-			return nil, errors.Trace(err)
-		}
-		if n := len(result.Results); n != len(machineTags) {
-			return nil, errors.Errorf("expected %d result(s), got %d", len(machineTags), n)
-		}
-		for i, result := range result.Results {
-			allResults[index[i]] = result
-		}
+	return machineTags, allResults, index
+}
+
+func mergeDestroyMachineResults(allResults []params.DestroyMachineResult, index []int, results []params.DestroyMachineResult) ([]params.DestroyMachineResult, error) {
+	if n := len(results); n != len(index) {
+		return nil, errors.Errorf("expected %d result(s), got %d", len(index), n)
+	}
+	for i, result := range results {
+		allResults[index[i]] = result
 	}
 	return allResults, nil
 }

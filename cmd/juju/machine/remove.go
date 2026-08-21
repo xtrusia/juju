@@ -121,8 +121,12 @@ func (c *removeCommand) Init(args []string) error {
 	return nil
 }
 
-type RemoveMachineAPI interface {
+type DryRunRemoveMachineAPI interface {
 	DestroyMachinesWithParams(force, keep, dryRun bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error)
+}
+
+type RemoveMachineAPI interface {
+	DryRunRemoveMachineAPI
 	DestroyMachinesWithHostedUnitsAndContainers(force, keep bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error)
 	BestAPIVersion() int
 	Close() error
@@ -210,19 +214,23 @@ func (c *removeCommand) Run(ctx *cmd.Context) error {
 		return err
 	}
 
-	destroyMachines := client.DestroyMachinesWithParams
+	var results []params.DestroyMachineResult
 	if destroyHostedUnitsAndContainers {
-		destroyMachines = func(force, keep, _ bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error) {
-			return client.DestroyMachinesWithHostedUnitsAndContainers(force, keep, maxWait, machines...)
-		}
+		results, err = client.DestroyMachinesWithHostedUnitsAndContainers(
+			c.Force,
+			c.KeepInstance,
+			maxWait,
+			c.MachineIds...,
+		)
+	} else {
+		results, err = client.DestroyMachinesWithParams(
+			c.Force,
+			c.KeepInstance,
+			false,
+			maxWait,
+			c.MachineIds...,
+		)
 	}
-	results, err := destroyMachines(
-		c.Force,
-		c.KeepInstance,
-		false,
-		maxWait,
-		c.MachineIds...,
-	)
 	if err := block.ProcessBlockedError(err, block.BlockRemove); err != nil {
 		return errors.Trace(err)
 	}
@@ -235,7 +243,7 @@ func (c *removeCommand) Run(ctx *cmd.Context) error {
 	}
 }
 
-func (c *removeCommand) dryRun(client RemoveMachineAPI) ([]params.DestroyMachineResult, error) {
+func (c *removeCommand) dryRun(client DryRunRemoveMachineAPI) ([]params.DestroyMachineResult, error) {
 	results, err := client.DestroyMachinesWithParams(
 		c.Force,
 		c.KeepInstance,
