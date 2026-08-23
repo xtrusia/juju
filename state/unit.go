@@ -507,12 +507,19 @@ func (u *Unit) Destroy() error {
 func (u *Unit) DestroyWithForce(force bool, maxWait time.Duration) (errs []error, err error) {
 	op := u.DestroyOperation()
 	defer func() {
-		if op.unit.doc.Life == Dead {
-			u.doc.Life = Dead
-		} else if err == nil && op.lifecycleChanged {
-			// The document might actually be removed, so keep the historical
-			// Dying approximation in that case.
-			u.doc.Life = Dying
+		switch op.unit.doc.Life {
+		case Dead:
+			u.doc.Life = op.unit.doc.Life
+		case Dying:
+			if err == nil {
+				u.doc.Life = op.unit.doc.Life
+			}
+		case Alive:
+			if err == nil && op.lifecycleChanged {
+				// The document might actually be removed, so keep the historical
+				// Dying approximation in that case.
+				u.doc.Life = Dying
+			}
 		}
 	}()
 	op.Force = force
@@ -544,8 +551,8 @@ type DestroyUnitOperation struct {
 	// Removed is true if the destroy operation removed the unit.
 	Removed bool
 
-	// lifecycleChanged is true if the operation changed or observed a
-	// terminal lifecycle for the unit.
+	// lifecycleChanged is true if the operation changed the unit lifecycle
+	// or observed that the unit was removed.
 	lifecycleChanged bool
 }
 
@@ -748,6 +755,9 @@ func (op *DestroyUnitOperation) destroyOps() ([]txn.Op, error) {
 	agentStatusDocId := op.unit.globalAgentKey()
 	agentStatusInfo, agentErr := getStatus(op.unit.st.db(), agentStatusDocId, "agent")
 	if errors.IsNotFound(agentErr) {
+		if op.Force {
+			return setDyingOps(nil)
+		}
 		return nil, errAlreadyDying
 	} else if agentErr != nil {
 		if !op.Force {
@@ -812,11 +822,14 @@ func (op *DestroyUnitOperation) destroyOps() ([]txn.Op, error) {
 	// All operational errors encountered will be added to the operation.
 	// If the 'force' is not set, any error will be fatal and no operations will be returned.
 	removeOps, err := op.unit.removeOps(removeAsserts, &op.ForcedOperation, op.DestroyStorage)
+	if err == errAlreadyRemoved {
+		op.Removed = true
+		op.lifecycleChanged = true
+		return nil, errAlreadyDying
+	}
 	op.Removed = err == nil
 	op.lifecycleChanged = op.Removed
-	if err == errAlreadyRemoved {
-		return nil, errAlreadyDying
-	} else if op.FatalError(err) {
+	if op.FatalError(err) {
 		return nil, err
 	}
 	ops := []txn.Op{statusOp}
@@ -1164,6 +1177,10 @@ func (op *RemoveUnitOperation) removeOps() (ops []txn.Op, err error) {
 	// Now we're sure we haven't left any scopes occupied by this unit, we
 	// can safely remove the document.
 	unitRemoveOps, err := op.unit.removeOps(isDeadDoc, &op.ForcedOperation, false)
+	if err == errAlreadyRemoved {
+		op.removed = true
+		return nil, errAlreadyDying
+	}
 	op.removed = err == nil
 	if op.FatalError(err) {
 		return nil, err
