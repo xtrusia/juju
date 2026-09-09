@@ -9,8 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/juju/charm/v12"
@@ -18,10 +21,12 @@ import (
 	"github.com/juju/cmd/v3"
 	"github.com/juju/cmd/v3/cmdtesting"
 	"github.com/juju/errors"
+	jujuhttp "github.com/juju/http/v2"
 	"github.com/juju/loggo"
 	"github.com/juju/mgo/v3"
 	mgotesting "github.com/juju/mgo/v3/testing"
 	"github.com/juju/names/v5"
+	"github.com/juju/proxy"
 	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
@@ -69,6 +74,7 @@ import (
 	"github.com/juju/juju/testcharms"
 	"github.com/juju/juju/testing"
 	"github.com/juju/juju/tools"
+	proxyconfig "github.com/juju/juju/utils/proxy"
 	jujuversion "github.com/juju/juju/version"
 )
 
@@ -194,6 +200,113 @@ func (s *BootstrapSuite) TestCheckJWKSReachable(c *gc.C) {
 	err = cmd.Run(nil)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(called, jc.IsTrue)
+}
+
+func (s *BootstrapSuite) TestBootstrapProxy(c *gc.C) {
+	newProxy := func(name string) *httptest.Server {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Proxy", name)
+			w.WriteHeader(http.StatusOK)
+		}))
+		s.AddCleanup(func(*gc.C) { server.Close() })
+		return server
+	}
+	inheritedProxy := newProxy("inherited")
+	modelProxy := newProxy("model")
+	inherited := proxy.Settings{
+		Http: inheritedProxy.URL, Https: inheritedProxy.URL,
+		Ftp: "http://inherited.invalid:3128", NoProxy: "inherited.internal",
+	}
+	modern := proxy.Settings{
+		Http: modelProxy.URL, Https: modelProxy.URL,
+		Ftp: "http://model.invalid:3128", NoProxy: "10.20.0.0/16,model.internal",
+	}
+	s.PatchValue(&proxyconfig.DefaultConfig, proxyconfig.ProxyConfig{})
+	for _, name := range []string{"http_proxy", "https_proxy", "ftp_proxy", "no_proxy"} {
+		s.PatchEnvironment(name, "")
+		s.PatchEnvironment(strings.ToUpper(name), "")
+	}
+	baseConfig := s.bootstrapParams.ControllerModelConfig
+	for _, test := range []struct {
+		name     string
+		attrs    testing.Attrs
+		expected proxy.Settings
+		proxy    string
+	}{
+		{
+			name: "juju proxy overrides inherited environment",
+			attrs: testing.Attrs{
+				"juju-http-proxy": modern.Http, "juju-https-proxy": modern.Https,
+				"juju-ftp-proxy": modern.Ftp, "juju-no-proxy": modern.NoProxy,
+			},
+			expected: modern, proxy: "model",
+		}, {
+			name: "legacy proxy preserves inherited environment",
+			attrs: testing.Attrs{
+				"http-proxy": inherited.Http, "https-proxy": inherited.Https,
+				"ftp-proxy": inherited.Ftp, "no-proxy": inherited.NoProxy,
+			},
+			expected: inherited, proxy: "inherited",
+		}, {
+			name:     "unset proxy preserves inherited environment",
+			expected: inherited, proxy: "inherited",
+		}, {
+			name:     "juju-no-proxy alone preserves inherited environment",
+			attrs:    testing.Attrs{"juju-no-proxy": "ignored.internal"},
+			expected: inherited, proxy: "inherited",
+		},
+	} {
+		c.Log(test.name)
+		inherited.SetEnvironmentValues()
+		c.Assert(proxyconfig.DefaultConfig.Set(inherited), jc.ErrorIsNil)
+		cfg, err := baseConfig.Apply(test.attrs)
+		c.Assert(err, jc.ErrorIsNil)
+		s.bootstrapParams.ControllerModelConfig = cfg
+		s.bootstrapParams.ControllerConfig[controller.LoginTokenRefreshURL] = "http://jimm.invalid/jwks"
+		s.writeBootstrapParamsFile(c)
+
+		stop := errors.New("stop after checking bootstrap proxy")
+		s.PatchValue(&checkJWKSReachable, func(string) error {
+			for name, expected := range map[string]string{
+				"http_proxy": test.expected.Http, "https_proxy": test.expected.Https,
+				"ftp_proxy": test.expected.Ftp, "no_proxy": test.expected.NoProxy,
+			} {
+				c.Check(os.Getenv(name), gc.Equals, expected)
+				c.Check(os.Getenv(strings.ToUpper(name)), gc.Equals, expected)
+			}
+			transport := &http.Transport{Proxy: proxyconfig.DefaultConfig.GetProxy}
+			defer transport.CloseIdleConnections()
+			client := &http.Client{Timeout: testing.ShortWait}
+			defer client.CloseIdleConnections()
+			for _, client := range []jujuhttp.HTTPClient{
+				&http.Client{Transport: transport, Timeout: testing.ShortWait},
+				jujuhttp.NewClient(jujuhttp.WithHTTPClient(client)),
+			} {
+				req, err := http.NewRequest(http.MethodGet, "http://bootstrap.invalid/", nil)
+				c.Assert(err, jc.ErrorIsNil)
+				resp, err := client.Do(req)
+				c.Assert(err, jc.ErrorIsNil)
+				resp.Body.Close()
+				c.Check(resp.Header.Get("X-Proxy"), gc.Equals, test.proxy)
+			}
+			for _, scheme := range []string{"http", "https"} {
+				req, err := http.NewRequest(http.MethodGet, scheme+"://bootstrap.invalid/", nil)
+				c.Assert(err, jc.ErrorIsNil)
+				got, err := transport.Proxy(req)
+				c.Assert(err, jc.ErrorIsNil)
+				c.Assert(got, gc.NotNil)
+				c.Check(got.String(), gc.Equals, test.expected.Http)
+				req.URL.Host = test.proxy + ".internal"
+				got, err = transport.Proxy(req)
+				c.Assert(err, jc.ErrorIsNil)
+				c.Check(got, gc.IsNil)
+			}
+			return stop
+		})
+		_, cmd, err := s.initBootstrapCommand(c, nil)
+		c.Assert(err, jc.ErrorIsNil)
+		c.Assert(cmd.Run(nil), jc.ErrorIs, stop)
+	}
 }
 
 func (s *BootstrapSuite) TestLocalControllerCharm(c *gc.C) {

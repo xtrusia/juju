@@ -50,6 +50,7 @@ import (
 	"github.com/juju/juju/state/cloudimagemetadata"
 	"github.com/juju/juju/state/stateenvirons"
 	"github.com/juju/juju/tools"
+	proxyconfig "github.com/juju/juju/utils/proxy"
 	jujuversion "github.com/juju/juju/version"
 )
 
@@ -178,6 +179,14 @@ func (c *BootstrapCommand) Run(ctx *cmd.Context) error {
 	var args instancecfg.StateInitializationParams
 	if err := args.Unmarshal(bootstrapParamsData); err != nil {
 		return errors.Trace(err)
+	}
+
+	// Apply model proxies before making any bootstrap HTTP requests.
+	if settings := args.ControllerModelConfig.JujuProxySettings(); settings.HasProxySet() {
+		if err := proxyconfig.DefaultConfig.Set(settings); err != nil {
+			return errors.Trace(err)
+		}
+		settings.SetEnvironmentValues()
 	}
 
 	// The JWKS refresh URL is a public key that we trust for federated
