@@ -664,10 +664,13 @@ func (s *statusUnitTestSuite) TestApplicationFilterIndependentOfAlphabeticUnitOr
 		Application: applicationA,
 		Machine:     machine,
 	})
-	s.Factory.MakeUnit(c, &factory.UnitParams{
+	colocated := s.Factory.MakeUnit(c, &factory.UnitParams{
 		Application: applicationB,
 		Machine:     machine,
 	})
+
+	// Only the unit sharing a machine with application A should be visible.
+	s.Factory.MakeUnit(c, &factory.UnitParams{Application: applicationB})
 
 	client := apiclient.NewClient(s.APIState, coretesting.NoopLogger{})
 	for i := 0; i < 20; i++ {
@@ -677,6 +680,10 @@ func (s *statusUnitTestSuite) TestApplicationFilterIndependentOfAlphabeticUnitOr
 		})
 		c.Assert(err, jc.ErrorIsNil)
 		c.Assert(status.Applications, gc.HasLen, 2)
+		units := status.Applications[applicationB.Name()].Units
+		c.Check(units, gc.HasLen, 1)
+		_, ok := units[colocated.Name()]
+		c.Check(ok, jc.IsTrue)
 	}
 }
 
