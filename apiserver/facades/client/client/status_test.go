@@ -664,19 +664,29 @@ func (s *statusUnitTestSuite) TestApplicationFilterIndependentOfAlphabeticUnitOr
 		Application: applicationA,
 		Machine:     machine,
 	})
-	s.Factory.MakeUnit(c, &factory.UnitParams{
+	colocated := s.Factory.MakeUnit(c, &factory.UnitParams{
 		Application: applicationB,
 		Machine:     machine,
 	})
 
+	// Only the unit sharing a machine with application A should be visible.
+	s.Factory.MakeUnit(c, &factory.UnitParams{Application: applicationB})
+
 	client := apiclient.NewClient(s.APIState, coretesting.NoopLogger{})
-	for i := 0; i < 20; i++ {
+	// Map iteration order is random, and only about one run in eight
+	// visits application B's units before application A's. Repeat
+	// enough times to hit that order.
+	for i := 0; i < 100; i++ {
 		c.Logf("run %d", i)
 		status, err := client.Status(&apiclient.StatusArgs{
 			Patterns: []string{applicationA.Name()},
 		})
 		c.Assert(err, jc.ErrorIsNil)
 		c.Assert(status.Applications, gc.HasLen, 2)
+		units := status.Applications[applicationB.Name()].Units
+		c.Check(units, gc.HasLen, 1)
+		_, ok := units[colocated.Name()]
+		c.Check(ok, jc.IsTrue)
 	}
 }
 
@@ -1202,6 +1212,77 @@ func (s *filteringBranchesSuite) TestFullStatusBranchFilterTwoBranchesSubordinat
 	c.Assert(ok, jc.IsTrue)
 	c.Assert(b.AssignedUnits, jc.DeepEquals, map[string][]string{s.appB: {s.appB + "/0"}})
 	c.Assert(status.Applications, gc.HasLen, 2)
+}
+
+// TestFullStatusStorageFilterColocatedUnits checks that the storage of
+// every matching unit on a shared machine is returned, whichever unit
+// the filter visits first.
+func (s *filteringBranchesSuite) TestFullStatusStorageFilterColocatedUnits(c *gc.C) {
+	machine := s.Factory.MakeMachine(c, nil)
+	ch := s.Factory.MakeCharm(c, &factory.CharmParams{Name: "storage-filesystem"})
+	var owners []string
+	for _, name := range []string{"store-a", "store-b"} {
+		app := s.Factory.MakeApplication(c, &factory.ApplicationParams{
+			Name:  name,
+			Charm: ch,
+			Storage: map[string]state.StorageConstraints{
+				"data": {Pool: "rootfs", Count: 1, Size: 16},
+			},
+		})
+		unit := s.Factory.MakeUnit(c, &factory.UnitParams{
+			Application: app,
+			Machine:     machine,
+		})
+		owners = append(owners, unit.Tag().String())
+	}
+
+	client := s.clientForTest(c)
+
+	status, err := client.FullStatus(params.StatusParams{
+		Patterns:       []string{"store-*"},
+		IncludeStorage: true,
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	var storageOwners []string
+	for _, storage := range status.Storage {
+		storageOwners = append(storageOwners, storage.OwnerTag)
+	}
+	c.Check(storageOwners, jc.SameContents, owners)
+}
+
+// TestFullStatusBranchFilterColocatedSubordinateUnits checks that the
+// branches of the subordinates of every matching unit on a shared
+// machine are returned, whichever unit the filter visits first.
+func (s *filteringBranchesSuite) TestFullStatusBranchFilterColocatedSubordinateUnits(c *gc.C) {
+	machine := s.Factory.MakeMachine(c, nil)
+	app, err := s.State.Application(s.appB)
+	c.Assert(err, jc.ErrorIsNil)
+	rels, err := app.Relations()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(rels, gc.HasLen, 1)
+	for _, branch := range []string{"apple", "banana"} {
+		unit := s.Factory.MakeUnit(c, &factory.UnitParams{
+			Application: app,
+			Machine:     machine,
+		})
+		ru, err := rels[0].Unit(unit)
+		c.Assert(err, jc.ErrorIsNil)
+		err = ru.EnterScope(nil)
+		c.Assert(err, jc.ErrorIsNil)
+		err = unit.Refresh()
+		c.Assert(err, jc.ErrorIsNil)
+		subordinates := unit.SubordinateNames()
+		c.Assert(subordinates, gc.HasLen, 1)
+		s.assertBranchAssignUnit(c, branch, subordinates[0])
+	}
+
+	client := s.clientForTest(c)
+
+	status, err := client.FullStatus(params.StatusParams{
+		Patterns: []string{s.appB},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(status.Branches, gc.HasLen, 2)
 }
 
 func (s *filteringBranchesSuite) clientForTest(c *gc.C) *client.Client {

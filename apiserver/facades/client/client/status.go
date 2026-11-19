@@ -359,54 +359,78 @@ func (c *Client) FullStatus(args params.StatusParams) (params.FullStatus, error)
 		matchedApps := set.NewStrings()
 		matchedUnits := set.NewStrings()
 		unitChainPredicate := UnitChainPredicateFn(predicate, context.unitByName)
-		// It's possible that we will discover a unit that matches given filter
-		// half way through units collection. In that case, it may be that the machine
-		// for that unit has other applications' units on it that have already been examined
-		// prior. This means that we may miss these other application(s).
-		// This behavior has been inconsistent since we get units in a map where
-		// the order is not guaranteed.
-		// To cater for this scenario, we need to gather all units
-		// in a temporary collection keyed on machine to allow for the later
-		// pass. This fixes situations similar to inconsistencies
-		// observed in lp#1592872.
-		machineUnits := map[string][]string{}
+		// Collect the machines of all matching units before removing
+		// anything, so the result does not depend on map iteration order.
+		unitMachines := set.NewStrings()
+		// The storage and branch filters look these units up in
+		// matchedUnits.
+		unitsToMatch := set.NewStrings()
+		for _, storageInstance := range context.storageInstances {
+			owner, _ := storageInstance.Owner()
+			if tag, ok := owner.(names.UnitTag); ok {
+				unitsToMatch.Add(tag.Id())
+			}
+		}
+		for _, branch := range context.branches {
+			for _, units := range branch.AssignedUnits() {
+				for _, name := range units {
+					unitsToMatch.Add(name)
+				}
+			}
+		}
+		needsMatch := func(unit *state.Unit) bool {
+			if unitsToMatch.Contains(unit.Name()) {
+				return true
+			}
+			for _, name := range unit.SubordinateNames() {
+				if unitsToMatch.Contains(name) {
+					return true
+				}
+			}
+			return false
+		}
 		for _, unitMap := range context.allAppsUnitsCharmBindings.units {
-			for name, unit := range unitMap {
-				machineId, err := unit.AssignedMachineId()
-				if err != nil {
-					machineId = ""
-				} else if matchedMachines.Contains(machineId) {
-					// Unit is on a matching machine.
-					matchedApps.Add(unit.ApplicationName())
-					continue
-				}
-				if machineId != "" {
-					machineUnits[machineId] = append(machineUnits[machineId], unit.ApplicationName())
-				}
-
-				// Always start examining at the top-level. This
-				// prevents a situation where we filter a subordinate
-				// before we discover its parent is a match.
+			for _, unit := range unitMap {
+				// unitChainPredicate matches subordinates through their principal.
 				if !unit.IsPrincipal() {
 					continue
-				} else if matches, err := unitChainPredicate(unit); err != nil {
+				}
+				machineId, err := unit.AssignedMachineId()
+				if err == nil && matchedMachines.Contains(machineId) {
+					continue
+				}
+				// The predicate reads the unit's status, application and
+				// ports from the database. A unit on a machine that is
+				// already kept stays in the result either way, so skip
+				// it unless the storage or branch filter needs to know
+				// whether it matched.
+				if err == nil && unitMachines.Contains(machineId) && !needsMatch(unit) {
+					continue
+				}
+				matches, err := unitChainPredicate(unit)
+				if err != nil {
 					return noStatus, errors.Annotate(err, "could not filter units")
-				} else if !matches {
-					delete(unitMap, name)
+				}
+				if !matches {
 					continue
 				}
 				matchedApps.Add(unit.ApplicationName())
 				matchedUnits.Add(unit.Name())
-				matchedUnits = matchedUnits.Union(set.NewStrings(unit.SubordinateNames()...))
+				for _, name := range unit.SubordinateNames() {
+					matchedUnits.Add(name)
+				}
 				if machineId != "" {
-					matchedMachines.Add(machineId)
+					unitMachines.Add(machineId)
 				}
 			}
 		}
-		for _, m := range matchedMachines.SortedValues() {
-			for _, a := range machineUnits[m] {
-				if !matchedApps.Contains(a) {
-					matchedApps.Add(a)
+		matchedMachines = matchedMachines.Union(unitMachines)
+		for appName, unitMap := range context.allAppsUnitsCharmBindings.units {
+			for name, unit := range unitMap {
+				if machineId, err := unit.AssignedMachineId(); err == nil && matchedMachines.Contains(machineId) {
+					matchedApps.Add(appName)
+				} else if unit.IsPrincipal() && !matchedUnits.Contains(name) {
+					delete(unitMap, name)
 				}
 			}
 		}
