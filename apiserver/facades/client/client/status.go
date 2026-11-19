@@ -359,10 +359,12 @@ func (c *Client) FullStatus(args params.StatusParams) (params.FullStatus, error)
 		matchedApps := set.NewStrings()
 		matchedUnits := set.NewStrings()
 		unitChainPredicate := UnitChainPredicateFn(predicate, context.unitByName)
-		// Discover all matching machines before removing any colocated units.
+		// Collect the machines of all matching units before removing
+		// anything, so the result does not depend on map iteration order.
 		unitMachines := set.NewStrings()
 		for _, unitMap := range context.allAppsUnitsCharmBindings.units {
 			for _, unit := range unitMap {
+				// unitChainPredicate matches subordinates through their principal.
 				if !unit.IsPrincipal() {
 					continue
 				}

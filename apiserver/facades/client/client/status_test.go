@@ -673,7 +673,10 @@ func (s *statusUnitTestSuite) TestApplicationFilterIndependentOfAlphabeticUnitOr
 	s.Factory.MakeUnit(c, &factory.UnitParams{Application: applicationB})
 
 	client := apiclient.NewClient(s.APIState, coretesting.NoopLogger{})
-	for i := 0; i < 20; i++ {
+	// Map iteration order is random, and only about one run in eight
+	// visits application B's units before application A's. Repeat
+	// enough times to hit that order.
+	for i := 0; i < 100; i++ {
 		c.Logf("run %d", i)
 		status, err := client.Status(&apiclient.StatusArgs{
 			Patterns: []string{applicationA.Name()},
