@@ -2472,6 +2472,11 @@ func (env *azureEnviron) getInstanceTypesLocked(ctx context.ProviderCallContext)
 
 // getArchFromResourceSKU returns the architecture of the instance type based on the resource SKU.
 func getArchFromResourceSKU(resource *armcompute.ResourceSKU) corearch.Arch {
+	for _, capability := range resource.Capabilities {
+		if toValue(capability.Name) == "CpuArchitectureType" && toValue(capability.Value) == "Arm64" {
+			return corearch.ARM64
+		}
+	}
 	// These are the instance families that are ARM64 based in Azure for now.
 	arm64InstanceFamilies := set.NewStrings(
 		"standardDPSv5Family",

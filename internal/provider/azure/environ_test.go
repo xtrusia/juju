@@ -2977,6 +2977,16 @@ func (s *environSuite) TestGetArchFromResourceSKUARM64(c *gc.C) {
 	c.Assert(arch, gc.Equals, corearch.ARM64)
 }
 
+func (s *environSuite) TestGetArchFromResourceSKUARM64Capability(c *gc.C) {
+	arch := azure.GetArchFromResourceSKU(&armcompute.ResourceSKU{
+		Capabilities: []*armcompute.ResourceSKUCapabilities{{
+			Name:  to.Ptr("CpuArchitectureType"),
+			Value: to.Ptr("Arm64"),
+		}},
+	})
+	c.Check(arch, gc.Equals, corearch.ARM64)
+}
+
 func (s *environSuite) TestGetArchFromResourceSKUAMD64(c *gc.C) {
 	arch := azure.GetArchFromResourceSKU(&armcompute.ResourceSKU{
 		Family: to.Ptr(""),
