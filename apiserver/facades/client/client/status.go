@@ -362,6 +362,33 @@ func (c *Client) FullStatus(args params.StatusParams) (params.FullStatus, error)
 		// Collect the machines of all matching units before removing
 		// anything, so the result does not depend on map iteration order.
 		unitMachines := set.NewStrings()
+		// The storage and branch filters look these units up in
+		// matchedUnits.
+		unitsToMatch := set.NewStrings()
+		for _, storageInstance := range context.storageInstances {
+			owner, _ := storageInstance.Owner()
+			if tag, ok := owner.(names.UnitTag); ok {
+				unitsToMatch.Add(tag.Id())
+			}
+		}
+		for _, branch := range context.branches {
+			for _, units := range branch.AssignedUnits() {
+				for _, name := range units {
+					unitsToMatch.Add(name)
+				}
+			}
+		}
+		needsMatch := func(unit *state.Unit) bool {
+			if unitsToMatch.Contains(unit.Name()) {
+				return true
+			}
+			for _, name := range unit.SubordinateNames() {
+				if unitsToMatch.Contains(name) {
+					return true
+				}
+			}
+			return false
+		}
 		for _, unitMap := range context.allAppsUnitsCharmBindings.units {
 			for _, unit := range unitMap {
 				// unitChainPredicate matches subordinates through their principal.
@@ -370,6 +397,14 @@ func (c *Client) FullStatus(args params.StatusParams) (params.FullStatus, error)
 				}
 				machineId, err := unit.AssignedMachineId()
 				if err == nil && matchedMachines.Contains(machineId) {
+					continue
+				}
+				// The predicate reads the unit's status, application and
+				// ports from the database. A unit on a machine that is
+				// already kept stays in the result either way, so skip
+				// it unless the storage or branch filter needs to know
+				// whether it matched.
+				if err == nil && unitMachines.Contains(machineId) && !needsMatch(unit) {
 					continue
 				}
 				matches, err := unitChainPredicate(unit)
