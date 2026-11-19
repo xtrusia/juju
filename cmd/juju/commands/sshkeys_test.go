@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/juju/cmd/v3"
 	"github.com/juju/cmd/v3/cmdtesting"
 	jc "github.com/juju/testing/checkers"
 	sshtesting "github.com/juju/utils/v3/ssh/testing"
@@ -142,15 +143,28 @@ type AddKeySuite struct {
 
 var _ = gc.Suite(&AddKeySuite{})
 
+// TestAddKey reports all per-key errors and applies successful additions.
 func (s *AddKeySuite) TestAddKey(c *gc.C) {
 	key1 := sshtesting.ValidKeyOne.Key + " user@host"
 	s.setAuthorizedKeys(c, key1)
 
 	key2 := sshtesting.ValidKeyTwo.Key + " another@host"
-	context, err := cmdtesting.RunCommand(c, NewAddKeysCommand(), key2, "invalid-key")
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(cmdtesting.Stderr(context), gc.Matches, `cannot add key "invalid-key".*\n`)
+	context, err := cmdtesting.RunCommand(c, NewAddKeysCommand(), "invalid-key", "another-invalid-key", key2)
+	c.Assert(err, gc.Equals, cmd.ErrSilent)
+	addErrors := cmdtesting.Stderr(context)
+	c.Check(strings.Count(addErrors, "cannot add key"), gc.Equals, 2)
+	c.Check(strings.Contains(addErrors, `cannot add key "invalid-key":`), jc.IsTrue)
+	c.Check(strings.Contains(addErrors, `cannot add key "another-invalid-key":`), jc.IsTrue)
 	s.assertEnvironKeys(c, key1, key2)
+}
+
+// TestAddKeysSucceeds returns nil when every key is added.
+func (s *AddKeySuite) TestAddKeysSucceeds(c *gc.C) {
+	s.setAuthorizedKeys(c)
+	key := sshtesting.ValidKeyTwo.Key + " another@host"
+	_, err := cmdtesting.RunCommand(c, NewAddKeysCommand(), key)
+	c.Assert(err, jc.ErrorIsNil)
+	s.assertEnvironKeys(c, key)
 }
 
 func (s *AddKeySuite) TestBlockAddKey(c *gc.C) {
@@ -170,16 +184,30 @@ type RemoveKeySuite struct {
 
 var _ = gc.Suite(&RemoveKeySuite{})
 
+// TestRemoveKeys reports all per-key errors and applies successful removals.
 func (s *RemoveKeySuite) TestRemoveKeys(c *gc.C) {
 	key1 := sshtesting.ValidKeyOne.Key + " user@host"
 	key2 := sshtesting.ValidKeyTwo.Key + " another@host"
 	s.setAuthorizedKeys(c, key1, key2)
 
 	context, err := cmdtesting.RunCommand(c, NewRemoveKeysCommand(),
-		sshtesting.ValidKeyTwo.Fingerprint, "invalid-key")
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(cmdtesting.Stderr(context), gc.Matches, `cannot remove key id "invalid-key".*\n`)
+		"invalid-key", "another-invalid-key", sshtesting.ValidKeyTwo.Fingerprint)
+	c.Assert(err, gc.Equals, cmd.ErrSilent)
+	removeErrors := cmdtesting.Stderr(context)
+	c.Check(strings.Count(removeErrors, "cannot remove key id"), gc.Equals, 2)
+	c.Check(strings.Contains(removeErrors, `cannot remove key id "invalid-key":`), jc.IsTrue)
+	c.Check(strings.Contains(removeErrors, `cannot remove key id "another-invalid-key":`), jc.IsTrue)
 	s.assertEnvironKeys(c, key1)
+}
+
+// TestRemoveKeysSucceeds returns nil when every key is removed.
+func (s *RemoveKeySuite) TestRemoveKeysSucceeds(c *gc.C) {
+	key1 := sshtesting.ValidKeyOne.Key + " user@host"
+	key2 := sshtesting.ValidKeyTwo.Key + " another@host"
+	s.setAuthorizedKeys(c, key1, key2)
+	_, err := cmdtesting.RunCommand(c, NewRemoveKeysCommand(), sshtesting.ValidKeyOne.Fingerprint)
+	c.Assert(err, jc.ErrorIsNil)
+	s.assertEnvironKeys(c, key2)
 }
 
 func (s *RemoveKeySuite) TestBlockRemoveKeys(c *gc.C) {
@@ -205,14 +233,26 @@ func (s *ImportKeySuite) SetUpTest(c *gc.C) {
 	s.PatchValue(&keymanagerserver.RunSSHImportId, keymanagertesting.FakeImport)
 }
 
+// TestImportKeys reports all per-key errors and applies successful imports.
 func (s *ImportKeySuite) TestImportKeys(c *gc.C) {
 	key1 := sshtesting.ValidKeyOne.Key + " user@host"
 	s.setAuthorizedKeys(c, key1)
 
-	context, err := cmdtesting.RunCommand(c, NewImportKeysCommand(), "lp:validuser", "lp:invalid-key")
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(cmdtesting.Stderr(context), gc.Matches, `cannot import key id "lp:invalid-key".*\n`)
+	context, err := cmdtesting.RunCommand(c, NewImportKeysCommand(), "lp:invalid-key", "lp:invalid-key-2", "lp:validuser")
+	c.Assert(err, gc.Equals, cmd.ErrSilent)
+	importErrors := cmdtesting.Stderr(context)
+	c.Check(strings.Count(importErrors, "cannot import key id"), gc.Equals, 2)
+	c.Check(strings.Contains(importErrors, `cannot import key id "lp:invalid-key":`), jc.IsTrue)
+	c.Check(strings.Contains(importErrors, `cannot import key id "lp:invalid-key-2":`), jc.IsTrue)
 	s.assertEnvironKeys(c, key1, sshtesting.ValidKeyThree.Key)
+}
+
+// TestImportKeysSucceeds returns nil when every key is imported.
+func (s *ImportKeySuite) TestImportKeysSucceeds(c *gc.C) {
+	s.setAuthorizedKeys(c)
+	_, err := cmdtesting.RunCommand(c, NewImportKeysCommand(), "lp:validuser")
+	c.Assert(err, jc.ErrorIsNil)
+	s.assertEnvironKeys(c, sshtesting.ValidKeyThree.Key)
 }
 
 func (s *ImportKeySuite) TestBlockImportKeys(c *gc.C) {

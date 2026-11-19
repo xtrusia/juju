@@ -107,10 +107,15 @@ func (c *importKeysCommand) Run(context *cmd.Context) error {
 	if err != nil {
 		return block.ProcessBlockedError(err, block.BlockChange)
 	}
+	failed := false
 	for i, result := range results {
 		if result.Error != nil {
+			failed = true
 			fmt.Fprintf(context.Stderr, "cannot import key id %q: %v\n", c.sshKeyIds[i], result.Error)
 		}
+	}
+	if failed {
+		return cmd.ErrSilent
 	}
 	return nil
 }
